@@ -1,13 +1,10 @@
-name: Build and Release inferenced (Linux amd64)
+name: Build and Release inferenced + dapi (Linux amd64)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
         description: "Branch on gonka-ai/gonka to build from"
-        required: true
-      tag:
-        description: "Release tag (e.g. v0.2.12-linux)"
         required: true
 
 permissions:
@@ -22,6 +19,7 @@ jobs:
         with:
           repository: gonka-ai/gonka
           ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -31,48 +29,53 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker system prune -af --volumes
 
-      - name: Prepare build context (same as Makefile DOCKER_BUILD_UPGRADE)
-        working-directory: ./inference-chain
+      - name: Get last merged PR number for tag
+        id: tag
         run: |
-          rm -rf .docker-context && mkdir -p .docker-context/inference-chain
-          cp -r * .docker-context/inference-chain/ 2>/dev/null || true
-          cp -r .[^.]* .docker-context/inference-chain/ 2>/dev/null || true
-          rm -rf .docker-context/inference-chain/.docker-context
-          mkdir -p .docker-context/cosmovisor
-          cp -r ../cosmovisor/* .docker-context/cosmovisor/
+          PR_NUM=$(gh pr list --repo gonka-ai/gonka --state merged --limit 1 --json number --jq '.[0].number')
+          echo "tag=pr-${PR_NUM}" >> $GITHUB_OUTPUT
+          echo "Tag will be: pr-${PR_NUM}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build inferenced binary via Dockerfile
-        working-directory: ./inference-chain
+      - name: Build inferenced + dapi via decentralized-api Dockerfile
         run: |
           VERSION=$(git describe --always)
           COMMIT=$(git log -1 --format='%H')
-          LDFLAGS="-X github.com/cosmos/cosmos-sdk/version.Name=inference-chain \
+          INFERENCED_LDFLAGS="-X github.com/cosmos/cosmos-sdk/version.Name=inference-chain \
             -X github.com/cosmos/cosmos-sdk/version.AppName=inferenced \
             -X github.com/cosmos/cosmos-sdk/version.Version=${VERSION} \
             -X github.com/cosmos/cosmos-sdk/version.Commit=${COMMIT}"
+          DAPI_BUILD_FLAGS="-ldflags '-X github.com/cosmos/cosmos-sdk/version.Name=decentralized-api \
+            -X github.com/cosmos/cosmos-sdk/version.Version=${VERSION} \
+            -X github.com/cosmos/cosmos-sdk/version.Commit=${COMMIT}'"
           docker buildx build \
             --platform linux/amd64 \
-            --build-arg LDFLAGS="${LDFLAGS}" \
+            --build-arg LDFLAGS="${INFERENCED_LDFLAGS}" \
+            --build-arg BUILD_FLAGS="${DAPI_BUILD_FLAGS}" \
             --build-arg GOOS=linux \
             --build-arg GOARCH=amd64 \
+            --build-arg BLST_PORTABLE=true \
             --target binary-exporter \
-            -f Dockerfile \
+            -f decentralized-api/Dockerfile \
             --output type=local,dest=./output \
-            .docker-context
+            .
 
-      - name: Zip binary as inferenced-linux-amd64.zip
-        working-directory: ./inference-chain
+      - name: Create zips
         run: |
           cd output/build_output
           zip inferenced-linux-amd64.zip inferenced
-          mv inferenced-linux-amd64.zip ../..
+          zip decentralized-api-amd64.zip decentralized-api libwasmvm_muslc.x86_64.a libgcc_s.so.1
+          mv *.zip ../..
 
-      - name: Create release and upload inferenced-linux-amd64.zip
+      - name: Create release and upload both zips
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: "inferenced ${{ github.event.inputs.tag }} (from ${{ github.event.inputs.branch }})"
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Release ${{ steps.tag.outputs.tag }} (from ${{ github.event.inputs.branch }})"
           prerelease: true
-          files: inference-chain/inferenced-linux-amd64.zip
+          files: |
+            inferenced-linux-amd64.zip
+            decentralized-api-amd64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
