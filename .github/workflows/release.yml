@@ -34,12 +34,6 @@ jobs:
       - name: Install musl-tools
         run: sudo apt-get update -qq && sudo apt-get install -y musl-tools
 
-      - name: Download wasmvm static library (linux/amd64)
-        run: |
-          mkdir -p /tmp/wasmvm-static
-          curl -L -o /tmp/wasmvm-static/libwasmvm_muslc.a \
-            https://github.com/CosmWasm/wasmvm/releases/download/v2.2.4/libwasmvm_muslc.x86_64.a
-
       - name: Build static linux/amd64 binary
         working-directory: ./inference-chain
         run: |
@@ -50,10 +44,16 @@ jobs:
             -X github.com/cosmos/cosmos-sdk/version.Version=${VERSION} \
             -X github.com/cosmos/cosmos-sdk/version.Commit=${COMMIT} \
             -extldflags '-static'"
+
+          go mod download
+
+          WASMVM_DIR=$(go env GOPATH)/pkg/mod/github.com/\!cosm\!wasm/wasmvm/v2@v2.2.4/internal/api
+          curl -L -o "${WASMVM_DIR}/libwasmvm_muslc.x86_64.a" \
+            https://github.com/CosmWasm/wasmvm/releases/download/v2.2.4/libwasmvm_muslc.x86_64.a
+
           mkdir -p build/linux/amd64
           CGO_ENABLED=1 \
           CC=musl-gcc \
-          CGO_LDFLAGS="-L/tmp/wasmvm-static" \
           GOOS=linux GOARCH=amd64 \
           go build -tags muslc -ldflags "${LDFLAGS}" \
             -o build/linux/amd64/inferenced ./cmd/inferenced/main.go
