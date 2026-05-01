@@ -23,18 +23,25 @@ jobs:
           repository: gonka-ai/gonka
           ref: ${{ github.event.inputs.branch }}
 
-      - name: Set up Go 1.24
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24.2'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Verify runner architecture
-        run: uname -m && uname -a
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af --volumes
 
-      - name: Install musl-tools
-        run: sudo apt-get update -qq && sudo apt-get install -y musl-tools
+      - name: Prepare build context (same as Makefile DOCKER_BUILD_UPGRADE)
+        working-directory: ./inference-chain
+        run: |
+          rm -rf .docker-context && mkdir -p .docker-context/inference-chain
+          cp -r * .docker-context/inference-chain/ 2>/dev/null || true
+          cp -r .[^.]* .docker-context/inference-chain/ 2>/dev/null || true
+          rm -rf .docker-context/inference-chain/.docker-context
+          mkdir -p .docker-context/cosmovisor
+          cp -r ../cosmovisor/* .docker-context/cosmovisor/
 
-      - name: Build static linux/amd64 binary
+      - name: Build inferenced binary via Dockerfile
         working-directory: ./inference-chain
         run: |
           VERSION=$(git describe --always)
@@ -42,28 +49,23 @@ jobs:
           LDFLAGS="-X github.com/cosmos/cosmos-sdk/version.Name=inference-chain \
             -X github.com/cosmos/cosmos-sdk/version.AppName=inferenced \
             -X github.com/cosmos/cosmos-sdk/version.Version=${VERSION} \
-            -X github.com/cosmos/cosmos-sdk/version.Commit=${COMMIT} \
-            -extldflags '-static'"
-
-          go mod download
-
-          curl -L -o /tmp/libwasmvm_muslc.x86_64.a \
-            https://github.com/CosmWasm/wasmvm/releases/download/v2.2.4/libwasmvm_muslc.x86_64.a
-          WASMVM_DIR=$(go env GOPATH)/pkg/mod/github.com/\!cosm\!wasm/wasmvm/v2@v2.2.4/internal/api
-          chmod u+w "${WASMVM_DIR}"
-          cp /tmp/libwasmvm_muslc.x86_64.a "${WASMVM_DIR}/libwasmvm_muslc.x86_64.a"
-
-          mkdir -p build/linux/amd64
-          CGO_ENABLED=1 \
-          CC=musl-gcc \
-          GOOS=linux GOARCH=amd64 \
-          go build -tags muslc -ldflags "${LDFLAGS}" \
-            -o build/linux/amd64/inferenced ./cmd/inferenced/main.go
+            -X github.com/cosmos/cosmos-sdk/version.Commit=${COMMIT}"
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg LDFLAGS="${LDFLAGS}" \
+            --build-arg GOOS=linux \
+            --build-arg GOARCH=amd64 \
+            --target binary-exporter \
+            -f Dockerfile \
+            --output type=local,dest=./output \
+            .docker-context
 
       - name: Zip binary as inferenced-linux-amd64.zip
+        working-directory: ./inference-chain
         run: |
-          cd inference-chain/build/linux/amd64
+          cd output/build_output
           zip inferenced-linux-amd64.zip inferenced
+          mv inferenced-linux-amd64.zip ../..
 
       - name: Create release and upload inferenced-linux-amd64.zip
         uses: softprops/action-gh-release@v2
@@ -71,6 +73,6 @@ jobs:
           tag_name: ${{ github.event.inputs.tag }}
           name: "inferenced ${{ github.event.inputs.tag }} (from ${{ github.event.inputs.branch }})"
           prerelease: true
-          files: inference-chain/build/linux/amd64/inferenced-linux-amd64.zip
+          files: inference-chain/inferenced-linux-amd64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
