@@ -47,9 +47,11 @@ jobs:
 
           go mod download
 
-          WASMVM_DIR=$(go env GOPATH)/pkg/mod/github.com/\!cosm\!wasm/wasmvm/v2@v2.2.4/internal/api
-          curl -L -o "${WASMVM_DIR}/libwasmvm_muslc.x86_64.a" \
+          curl -L -o /tmp/libwasmvm_muslc.x86_64.a \
             https://github.com/CosmWasm/wasmvm/releases/download/v2.2.4/libwasmvm_muslc.x86_64.a
+          WASMVM_DIR=$(go env GOPATH)/pkg/mod/github.com/\!cosm\!wasm/wasmvm/v2@v2.2.4/internal/api
+          chmod u+w "${WASMVM_DIR}"
+          cp /tmp/libwasmvm_muslc.x86_64.a "${WASMVM_DIR}/libwasmvm_muslc.x86_64.a"
 
           mkdir -p build/linux/amd64
           CGO_ENABLED=1 \
