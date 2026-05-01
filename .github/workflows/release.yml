@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build-and-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout gonka-ai/gonka at specified branch
         uses: actions/checkout@v4
@@ -27,9 +27,6 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker system prune -af --volumes
-
-      - name: Set up QEMU for multi-platform Docker builds
-        uses: docker/setup-qemu-action@v3
 
       - name: Build linux/amd64 binary via Docker
         working-directory: ./inference-chain
