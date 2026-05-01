@@ -32,12 +32,17 @@ jobs:
         working-directory: ./inference-chain
         run: make build-linux-docker
 
-      - name: Create release and upload inferenced
+      - name: Zip binary as inferenced-linux-amd64.zip (matches launch.py expectation)
+        run: |
+          cd inference-chain/build/linux/amd64
+          zip inferenced-linux-amd64.zip inferenced
+
+      - name: Create release and upload inferenced-linux-amd64.zip
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
           name: "inferenced ${{ github.event.inputs.tag }} (from ${{ github.event.inputs.branch }})"
           prerelease: true
-          files: inference-chain/build/linux/amd64/inferenced
+          files: inference-chain/build/linux/amd64/inferenced-linux-amd64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
