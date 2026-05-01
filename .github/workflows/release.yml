@@ -28,6 +28,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker system prune -af --volumes
 
+      - name: Set up QEMU for multi-platform Docker builds
+        uses: docker/setup-qemu-action@v3
+
       - name: Build linux/amd64 binary via Docker
         working-directory: ./inference-chain
         run: make build-linux-docker
