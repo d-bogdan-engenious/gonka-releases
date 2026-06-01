@@ -3,8 +3,12 @@ name: Build and Release inferenced + dapi (Linux amd64)
 on:
   workflow_dispatch:
     inputs:
+      repo:
+        description: "Source repo to build from (default: personal fork for testnet builds)"
+        required: false
+        default: "d-bogdan-engenious/gonka"
       branch:
-        description: "Branch on gonka-ai/gonka to build from"
+        description: "Branch on the source repo to build from"
         required: true
       tag:
         description: "Release tag (optional; defaults to pr-<last merged PR repo-wide>)"
@@ -18,10 +22,10 @@ jobs:
   build-and-release:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout gonka-ai/gonka at specified branch
+      - name: Checkout source repo at specified branch
         uses: actions/checkout@v4
         with:
-          repository: gonka-ai/gonka
+          repository: ${{ github.event.inputs.repo }}
           ref: ${{ github.event.inputs.branch }}
           fetch-depth: 0
 
@@ -36,8 +40,8 @@ jobs:
       - name: Determine release tag
         id: tag
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            TAG="${{ github.event.inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
           else
             PR_NUM=$(gh pr list --repo gonka-ai/gonka --state merged --limit 1 --json number --jq '.[0].number')
             TAG="pr-${PR_NUM}"
@@ -46,6 +50,7 @@ jobs:
           echo "Tag will be: ${TAG}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
 
       - name: Build inferenced + dapi via decentralized-api Dockerfile
         run: |
