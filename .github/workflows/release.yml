@@ -6,6 +6,10 @@ on:
       branch:
         description: "Branch on gonka-ai/gonka to build from"
         required: true
+      tag:
+        description: "Release tag (optional; defaults to pr-<last merged PR repo-wide>)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -29,12 +33,17 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker system prune -af --volumes
 
-      - name: Get last merged PR number for tag
+      - name: Determine release tag
         id: tag
         run: |
-          PR_NUM=$(gh pr list --repo gonka-ai/gonka --state merged --limit 1 --json number --jq '.[0].number')
-          echo "tag=pr-${PR_NUM}" >> $GITHUB_OUTPUT
-          echo "Tag will be: pr-${PR_NUM}"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            PR_NUM=$(gh pr list --repo gonka-ai/gonka --state merged --limit 1 --json number --jq '.[0].number')
+            TAG="pr-${PR_NUM}"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Tag will be: ${TAG}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
