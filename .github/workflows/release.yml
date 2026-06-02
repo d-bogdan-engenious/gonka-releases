@@ -80,6 +80,9 @@ jobs:
           cd output/build_output
           zip inferenced-linux-amd64.zip inferenced
           zip decentralized-api-amd64.zip decentralized-api libwasmvm_muslc.x86_64.a libgcc_s.so.1
+          zip devshardd-v2.zip devshardd
+          zip devshardctl-v2.zip devshardctl
+          echo "DEVSHARDD_ZIP_SHA256=$(sha256sum devshardd-v2.zip | awk '{print $1}')"
           mv *.zip ../..
 
       - name: Create release and upload both zips
@@ -91,5 +94,7 @@ jobs:
           files: |
             inferenced-linux-amd64.zip
             decentralized-api-amd64.zip
+            devshardd-v2.zip
+            devshardctl-v2.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
