@@ -1,0 +1,35 @@
+name: Build devshardctl
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        default: "qdanik/gonka"
+      branch:
+        required: true
+      tag:
+        required: true
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repo }}
+          ref: ${{ github.event.inputs.branch }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: build devshardctl (static linux/amd64)
+        run: cd devshard && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$GITHUB_WORKSPACE/devshardctl" ./cmd/devshardctl && file "$GITHUB_WORKSPACE/devshardctl"
+      - name: zip
+        run: zip devshardctl-linux-amd64.zip devshardctl
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: devshardctl ${{ github.event.inputs.tag }}
+          prerelease: true
+          files: devshardctl-linux-amd64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
