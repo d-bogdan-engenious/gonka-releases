@@ -1,0 +1,47 @@
+name: Build devshardd
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        default: "gonka-ai/gonka"
+      branch:
+        required: true
+      tag:
+        required: true
+      devshard_version:
+        default: "v2"
+      binary_version:
+        default: "v2-r2"
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repo }}
+          ref: ${{ github.event.inputs.branch }}
+      - name: build devshardd (musl CGO)
+        run: |
+          DOCKER_BUILDKIT=1 docker build -f devshard/Dockerfile \
+            --build-arg DEVSHARD_VERSION=${{ github.event.inputs.devshard_version }} \
+            --build-arg DEVSHARD_BINARY_VERSION=${{ github.event.inputs.binary_version }} \
+            --build-arg BLST_PORTABLE=1 \
+            --build-arg GOARCH=amd64 \
+            --target runtime -t devshardd-img .
+          id=$(docker create devshardd-img)
+          docker cp $id:/usr/local/bin/devshardd ./devshardd
+          docker cp $id:/usr/local/bin/devshardctl ./devshardctl
+          docker rm $id
+          file ./devshardd ./devshardctl
+      - name: zip
+        run: zip devshardd-r2.zip devshardd devshardctl
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: devshardd ${{ github.event.inputs.tag }}
+          prerelease: true
+          files: devshardd-r2.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
