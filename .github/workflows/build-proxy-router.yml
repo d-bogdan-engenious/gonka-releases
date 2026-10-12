@@ -1,0 +1,32 @@
+name: Build proxy-router
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        default: "gonka-ai/gonka"
+      branch:
+        required: true
+        default: "devshard-0.2.x-v6"
+      tag:
+        required: true
+        default: "0.2.16"
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repo }}
+          ref: ${{ github.event.inputs.branch }}
+      - name: login ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: build proxy-router (haproxy base, v6 peer-rpc-h2)
+        run: |
+          DOCKER_BUILDKIT=1 docker build -f proxy-router/Dockerfile \
+            -t ghcr.io/d-bogdan-engenious/proxy-router:${{ github.event.inputs.tag }} .
+          docker image inspect ghcr.io/d-bogdan-engenious/proxy-router:${{ github.event.inputs.tag }} --format 'built {{.Id}} exposed={{json .Config.ExposedPorts}}'
+      - name: push
+        run: docker push ghcr.io/d-bogdan-engenious/proxy-router:${{ github.event.inputs.tag }}
