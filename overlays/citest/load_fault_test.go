@@ -317,7 +317,9 @@ func TestLoadFault(t *testing.T) {
 	// waves 2/3 all died at ~190–294 ok with "no devshard runtimes available … high_nonce=1".
 	// The dev loadtest scenarios set 100000; LOAD_MAX_NONCE defaults to 1_000_000 here.
 	maxNonce := uint32(envInt("LOAD_MAX_NONCE", 1_000_000))
+	// LOAD_VALIDATION_RATE in bps (10000 = every inference validated) — densifies validation-verdict findings.
 	harness.WriteMultiConfig(t, stack.WorkDir, harness.MultiConfigOpts{Hosts: nHosts, EscrowSlots: nSlots, EscrowAmount: escrowAmt, MaxNonce: maxNonce,
+		ValidationRate: uint32(envInt("LOAD_VALIDATION_RATE", 0)),
 		MLNodes: envInt("LOAD_ML_NODES", 1), RefusalTimeout: int64(envInt("LOAD_REFUSAL_TIMEOUT_S", 0)), ExecutionTimeout: int64(envInt("LOAD_EXEC_TIMEOUT_S", 0))})
 	// Control profile: LOAD_ML_TTFT / LOAD_ML_TOKEN_INTERVAL give the mock ML a realistic
 	// serving latency (dev loadtest "realistic" profile = 250ms / 20ms) instead of zero-latency,
