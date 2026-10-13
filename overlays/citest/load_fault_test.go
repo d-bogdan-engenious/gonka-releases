@@ -745,7 +745,9 @@ func dumpServiceLog(t *testing.T, service, outDir string) map[string]int {
 	}
 	out, _ := shellOut("docker", "logs", "--timestamps", ctr)
 	_ = os.WriteFile(filepath.Join(outDir, service+".log"), []byte(out), 0o644)
-	re := regexp.MustCompile(`(?i)(skipped: [a-z_]+=\d+|high_nonce|zero live weight|zero_live_weight|no live host capacity|quarantin\w+|throttl\w+|depleted|budget exhausted|runtimeAtNonceLimit|no devshard runtimes|escrow rotation|capacity_state|live_weight=\d+)`)
+	// `gateway: all N affordable escrow(s) at zero capacity … per-escrow weights: …` is the
+	// picker's own diagnostic for a "no live host capacity" 503 (gateway.go ~2318).
+	re := regexp.MustCompile(`(?i)(skipped: [a-z_]+=\d+|high_nonce|zero live weight|zero_live_weight|at zero capacity|no live host capacity|quarantin\w+|throttl\w+|strike\w*|depleted|budget exhausted|runtimeAtNonceLimit|no devshard runtimes|escrow rotation|capacity_state|live_weight=\d+|poc[_ -]excl\w+)`)
 	hist := map[string]int{}
 	for _, line := range strings.Split(out, "\n") {
 		for _, m := range re.FindAllString(line, -1) {
