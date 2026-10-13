@@ -1,0 +1,61 @@
+name: citest v6
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        default: "gonka-ai/gonka"
+      branch:
+        required: true
+        default: "devshard-0.2.x-v6"
+      target:
+        description: "testenv make target (e.g. citest-stack, citest-peerrpc-overlay, citest-peerrpc-limits)"
+        required: true
+        default: "citest-stack"
+permissions:
+  contents: read
+jobs:
+  citest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repo }}
+          ref: ${{ github.event.inputs.branch }}
+      - name: record SHA + versions
+        run: |
+          echo "SHA=$(git rev-parse HEAD)" | tee /tmp/citest.log
+          go version 2>/dev/null | tee -a /tmp/citest.log || true
+          docker version --format '{{.Server.Version}}' | tee -a /tmp/citest.log
+          docker buildx version | tee -a /tmp/citest.log
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.9'
+          cache-dependency-path: |
+            devshard/go.sum
+            common/go.sum
+            decentralized-api/go.sum
+      - name: build-devshardd
+        working-directory: ./devshard/testenv
+        run: make build-devshardd 2>&1 | tee -a /tmp/citest.log
+      - name: run ${{ github.event.inputs.target }}
+        id: run
+        working-directory: ./devshard/testenv
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make ${{ github.event.inputs.target }} 2>&1 | tee -a /tmp/citest.log
+      - name: tail + container state
+        if: always()
+        run: |
+          echo "=== docker ps -a ===" | tee -a /tmp/citest.log
+          docker ps -a | tee -a /tmp/citest.log || true
+          echo "=== make result: ${{ steps.run.outcome }} ===" | tee -a /tmp/citest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: citest-${{ github.event.inputs.target }}
+          path: /tmp/citest.log
+      - name: fail job if make failed
+        if: steps.run.outcome == 'failure'
+        run: exit 1
