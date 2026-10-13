@@ -11,3 +11,9 @@ citest-load: citest-images ## QA: load + fault driver (LOAD_RPS, LOAD_FAULT, LOA
 citest-ha-catchup: citest-images ## QA: only TestHAStaleStandbyCatchupIdempotent.
 	$(MAKE) build-devshardd
 	TESTENV_CITEST=1 go test -tags=testenvci ./citest/ -run '^TestHAStaleStandbyCatchupIdempotent$$' -count=1 -v -timeout 30m
+
+# QA: proxy-router integration test on a FULL checkout (turns #13 maxconn / #14 X-Real-IP into RUN).
+.PHONY: citest-proxy-routing
+citest-proxy-routing: ## QA: proxy-router/test-routing.sh + route-status_test.sh (needs docker, openssl, flock).
+	$(MAKE) -C ../../proxy-router test-route-status
+	cd ../../proxy-router && ./test-routing.sh
