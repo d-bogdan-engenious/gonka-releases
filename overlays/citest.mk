@@ -56,5 +56,7 @@ SCENARIO ?= normal-load
 .PHONY: citest-loadtest
 citest-loadtest: build-devshardd ## QA: make loadtest SCENARIO=<name> with artifacts under results-load.
 	mkdir -p $(CURDIR)/citest/results-load
+	bash $(CURDIR)/scripts/qa-loadtest-skeleton.sh
+	go run ./cmd/gencompose -config config/config.yaml -out /tmp/qa-skeleton-check.yml >/dev/null && echo "skeleton validates"
 	go run ./cmd/loadtest -scenario loadtest/scenarios/$(SCENARIO).yaml \
 	  -output $(CURDIR)/citest/results-load/loadtest-$(SCENARIO)-$$(date -u +%Y%m%dT%H%M%SZ) < /dev/null

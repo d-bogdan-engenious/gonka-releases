@@ -301,7 +301,12 @@ func TestLoadFault(t *testing.T) {
 	}
 	stack := harness.NewStack(t, "citest-load-*")
 	harness.RequireLinuxDevshardd(t, stack.TestenvDir)
-	harness.WriteMultiConfig(t, stack.WorkDir, harness.MultiConfigOpts{Hosts: nHosts, EscrowSlots: nSlots, EscrowAmount: escrowAmt,
+	// params.max_nonce defaults to 500 in testenv (config.go ApplyDefaults); the gateway skips an
+	// escrow as `high_nonce` well before that and, with escrow rotation off, never replaces it —
+	// waves 2/3 all died at ~190–294 ok with "no devshard runtimes available … high_nonce=1".
+	// The dev loadtest scenarios set 100000; LOAD_MAX_NONCE defaults to 1_000_000 here.
+	maxNonce := uint32(envInt("LOAD_MAX_NONCE", 1_000_000))
+	harness.WriteMultiConfig(t, stack.WorkDir, harness.MultiConfigOpts{Hosts: nHosts, EscrowSlots: nSlots, EscrowAmount: escrowAmt, MaxNonce: maxNonce,
 		MLNodes: envInt("LOAD_ML_NODES", 1), RefusalTimeout: int64(envInt("LOAD_REFUSAL_TIMEOUT_S", 0)), ExecutionTimeout: int64(envInt("LOAD_EXEC_TIMEOUT_S", 0))})
 	// Control profile: LOAD_ML_TTFT / LOAD_ML_TOKEN_INTERVAL give the mock ML a realistic
 	// serving latency (dev loadtest "realistic" profile = 250ms / 20ms) instead of zero-latency,
@@ -561,7 +566,15 @@ func TestLoadFault(t *testing.T) {
 		costPerOK = (ledgerStart.Balance - ledgerEnd.Balance) / uint64(byStatus["ok"])
 	}
 
+	// Always keep the gateway log (not only on failure): the 503 reason lives there
+	// (skipped reasons, quarantine, zero live weight), and a PASS run is where we read the knee.
+	gwReasons := dumpServiceLog(t, "devshardctl", outDir)
+	for _, h := range hosts {
+		dumpServiceLog(t, strings.TrimSpace(h), outDir)
+	}
+
 	summary := map[string]any{
+		"gateway_log_reasons": gwReasons, "max_nonce": maxNonce,
 		"escrow_amount": escrowAmt, "ledger_start": ledgerStart, "ledger_end": ledgerEnd, "cost_per_ok": costPerOK,
 		"name": name, "mode": modeLabel(rps, sweep, fault), "rps": rps, "sweep": sweep, "shape": shape,
 		"fault": fault, "target": target, "pause_at_s": pauseAtS, "pause_len_s": pauseLenS,
@@ -708,6 +721,40 @@ func capturePprof(t *testing.T, stack *harness.Stack, hosts []string, outDir, ta
 func decodeB64(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }
 
 var pprofDiagDone = map[string]bool{}
+
+// dumpServiceLog writes `docker logs` of this stack's <service> container to outDir/<service>.log and
+// returns a histogram of the gateway-side reason lines (skip reasons, quarantine, live weight,
+// nonce limit, depleted escrow) so the summary says WHY requests were refused.
+func dumpServiceLog(t *testing.T, service, outDir string) map[string]int {
+	t.Helper()
+	names, err := shellOut("docker", "ps", "-a", "--format", "{{.Names}}")
+	if err != nil {
+		t.Logf("dumpServiceLog %s: docker ps: %v", service, err)
+		return nil
+	}
+	var ctr string
+	for _, n := range strings.Fields(names) {
+		if strings.HasPrefix(n, "citest-load-") && strings.HasSuffix(n, "-"+service+"-1") {
+			ctr = n
+			break
+		}
+	}
+	if ctr == "" {
+		t.Logf("dumpServiceLog %s: container not found", service)
+		return nil
+	}
+	out, _ := shellOut("docker", "logs", "--timestamps", ctr)
+	_ = os.WriteFile(filepath.Join(outDir, service+".log"), []byte(out), 0o644)
+	re := regexp.MustCompile(`(?i)(skipped: [a-z_]+=\d+|high_nonce|zero live weight|zero_live_weight|no live host capacity|quarantin\w+|throttl\w+|depleted|budget exhausted|runtimeAtNonceLimit|no devshard runtimes|escrow rotation|capacity_state|live_weight=\d+)`)
+	hist := map[string]int{}
+	for _, line := range strings.Split(out, "\n") {
+		for _, m := range re.FindAllString(line, -1) {
+			hist[strings.ToLower(m)]++
+		}
+	}
+	t.Logf("gateway/%s log reasons: %v", service, hist)
+	return hist
+}
 
 // escrowFate queries the mock chain for the warm escrow's on-chain state (Phase 1b in testenv).
 // The mock store models only {not-found, unsettled, settled} — no refund/expiry — so the
