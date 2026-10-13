@@ -5,3 +5,9 @@
 citest-load: citest-images ## QA: load + fault driver (LOAD_RPS, LOAD_FAULT, LOAD_TARGET, LOAD_RPS_SWEEP…).
 	$(MAKE) build-devshardd
 	TESTENV_CITEST=1 go test -tags=testenvci ./citest/ -run '^TestLoadFault$$' -count=1 -v -timeout 180m
+
+# QA: single-test confirm target for the P0 failure (repeat-to-confirm rule).
+.PHONY: citest-ha-catchup
+citest-ha-catchup: citest-images ## QA: only TestHAStaleStandbyCatchupIdempotent.
+	$(MAKE) build-devshardd
+	TESTENV_CITEST=1 go test -tags=testenvci ./citest/ -run '^TestHAStaleStandbyCatchupIdempotent$$' -count=1 -v -timeout 30m
