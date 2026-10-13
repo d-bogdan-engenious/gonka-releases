@@ -17,3 +17,8 @@ citest-ha-catchup: citest-images ## QA: only TestHAStaleStandbyCatchupIdempotent
 citest-proxy-routing: ## QA: proxy-router/test-routing.sh + route-status_test.sh (needs docker, openssl, flock).
 	$(MAKE) -C ../../proxy-router test-route-status
 	cd ../../proxy-router && ./test-routing.sh
+
+# QA: D05/D06/1.1 — ALPN h2 over TLS vs cleartext h2c on the production proxy-router :9443 listener.
+.PHONY: citest-tls-alpn
+citest-tls-alpn: ## QA: proxy-router :9443 TLS+ALPN h2 (NGINX_MODE=https) and h2c (NGINX_MODE=http) probe.
+	bash $(CURDIR)/scripts/qa-tls-alpn.sh
