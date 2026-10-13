@@ -495,6 +495,7 @@ func TestLoadFault(t *testing.T) {
 	orph, recs, oerr := orphanedCount(client, eps.GatewayHTTP, adminKey)
 	pfe := payloadFetchErrCount("citest-load")
 	escFound, escSettled, escErr := escrowFate(t, eps, snap.EscrowID)
+	metrics := scrapeMetrics(t, client, stack, eps, hosts)
 
 	summary := map[string]any{
 		"name": name, "mode": modeLabel(rps, sweep, fault), "rps": rps, "sweep": sweep, "shape": shape,
@@ -505,6 +506,7 @@ func TestLoadFault(t *testing.T) {
 		"orphaned": orph, "gateway_records": recs, "orphan_query_err": fmt.Sprint(oerr),
 		"time_to_recovery": ttr, "payload_fetch_err": pfe, "buckets_10s": buckets,
 		"escrow": snap.EscrowID, "escrow_found": escFound, "escrow_settled": escSettled, "escrow_query_err": escErr,
+		"metrics": metrics,
 		"primary": primaryHost, "survivor": survivorHost, "sha": gitSHA(),
 	}
 	sb, _ := json.MarshalIndent(summary, "", " ")
@@ -645,4 +647,43 @@ func escrowFate(t *testing.T, eps harness.Endpoints, escrowID string) (found, se
 		return false, false, qerr.Error()
 	}
 	return resp.GetFound(), resp.GetEscrow().GetSettled(), ""
+}
+
+// scrapeMetrics collects the X1 observability counters (orphan / timeout / fetch) from the
+// gateway and from each versiond child at run end. RUN evidence for "is #19 visible?".
+func scrapeMetrics(t *testing.T, client *http.Client, stack *harness.Stack, eps harness.Endpoints, hosts []string) map[string]string {
+	t.Helper()
+	want := []string{"devshard_receipt_orphan_total", "devshard_validation_orphan_total", "devshard_inference_timeouts_total",
+		"devshard_gateway_timeout_actions_total", "devshard_payload_fetch_ttfb_seconds_count", "devshard_payload_fetch_ttfb_seconds_sum"}
+	out := map[string]string{}
+	pick := func(src, body string) {
+		for _, ln := range strings.Split(body, "\n") {
+			if strings.HasPrefix(ln, "#") {
+				continue
+			}
+			for _, w := range want {
+				if strings.HasPrefix(ln, w) {
+					out[src+":"+ln[:strings.IndexAny(ln+" ", " ")]] = strings.TrimSpace(ln[strings.LastIndex(ln, " ")+1:])
+				}
+			}
+		}
+	}
+	if resp, err := client.Get(eps.GatewayHTTP + "/metrics"); err == nil {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		pick("gateway", string(b))
+	} else {
+		out["gateway:err"] = err.Error()
+	}
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		body, err := stack.ComposeExecOutputTimeout(15*time.Second, h, "sh", "-c",
+			"for p in 5000 5001 5002; do wget -qO- http://127.0.0.1:$p/metrics 2>/dev/null && break; done")
+		if err != nil {
+			out[h+":err"] = err.Error()
+			continue
+		}
+		pick(h, body)
+	}
+	return out
 }
