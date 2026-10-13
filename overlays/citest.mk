@@ -46,3 +46,15 @@ citest-unit-dapi: ## QA: go test of decentralized-api devshard-related packages.
 citest-grpc-real: citest-images ## QA: TestGatewayEscrowReadGRPC | TestGatewayChatGRPCOnly | TestGatewayEscrowCreateGRPC.
 	$(MAKE) build-devshardd
 	$(CITEST_RPC_RUN) -run 'TestGatewayEscrowReadGRPC|TestGatewayChatGRPCOnly|TestGatewayEscrowCreateGRPC' -count=1 -v -timeout 40m
+
+# QA: the dev's declarative load runner (loadtest/scenarios/*.yaml) — catch-up.yaml is the
+# colleague's #19 (3 participants, 16 rps × 5 m, pause solo versiond-2 @90 s for 60 s). The runner
+# sets its own H2 env (loadtest/runner.go:749-753); its YAML assertions are the oracle. Artifacts
+# (run.yaml, metrics.jsonl, metrics-summary.json, assertions.json, compose logs, cpu/heap
+# profiles) land in citest/results-load/loadtest-<scenario>-<ts>/ so the workflow uploads them.
+SCENARIO ?= normal-load
+.PHONY: citest-loadtest
+citest-loadtest: build-devshardd ## QA: make loadtest SCENARIO=<name> with artifacts under results-load.
+	mkdir -p $(CURDIR)/citest/results-load
+	go run ./cmd/loadtest -scenario loadtest/scenarios/$(SCENARIO).yaml \
+	  -output $(CURDIR)/citest/results-load/loadtest-$(SCENARIO)-$$(date -u +%Y%m%dT%H%M%SZ) < /dev/null
