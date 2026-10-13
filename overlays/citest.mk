@@ -60,3 +60,9 @@ citest-loadtest: build-devshardd ## QA: make loadtest SCENARIO=<name> with artif
 	go run ./cmd/gencompose -config config/config.yaml -out /tmp/qa-skeleton-check.yml >/dev/null && echo "skeleton validates"
 	go run ./cmd/loadtest -scenario loadtest/scenarios/$(SCENARIO).yaml \
 	  -output $(CURDIR)/citest/results-load/loadtest-$(SCENARIO)-$$(date -u +%Y%m%dT%H%M%SZ) < /dev/null
+
+# QA: 2.9/2.11/2.12/2.8 — abusive clients against the production proxy-router frontends
+# (slowloris, oversized headers, % and dot-dot in rpc paths, attach-zone budget, conn-rate reject).
+.PHONY: citest-ingress-abuse
+citest-ingress-abuse: ## QA: proxy-router :9443/:18081 abuse probe (docker, curl, python3).
+	bash $(CURDIR)/scripts/qa-ingress-abuse.sh
