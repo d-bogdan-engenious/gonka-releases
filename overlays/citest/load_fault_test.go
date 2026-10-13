@@ -288,12 +288,48 @@ func TestLoadFault(t *testing.T) {
 	if escrowAmt == 0 {
 		escrowAmt = 100_000_000_000
 	}
+	// Topology: LOAD_HOSTS=2 → the HA pair (fault on the pair's sticky primary = 5.2/5.3 failover);
+	// LOAD_HOSTS=4 → HA pair + two solo participants, 3 escrow slots — the colleague's #19 /
+	// dev `loadtest` catch-up.yaml topology, where LOAD_TARGET=versiond-2 pauses a SOLO slot.
+	nHosts := envInt("LOAD_HOSTS", 2)
+	nSlots := envInt("LOAD_SLOTS", 0)
+	if nSlots == 0 {
+		nSlots = nHosts
+		if nHosts == 4 {
+			nSlots = 3
+		}
+	}
 	stack := harness.NewStack(t, "citest-load-*")
 	harness.RequireLinuxDevshardd(t, stack.TestenvDir)
-	harness.WriteMultiConfig(t, stack.WorkDir, harness.MultiConfigOpts{Hosts: 2, EscrowSlots: 2, EscrowAmount: escrowAmt})
+	harness.WriteMultiConfig(t, stack.WorkDir, harness.MultiConfigOpts{Hosts: nHosts, EscrowSlots: nSlots, EscrowAmount: escrowAmt,
+		MLNodes: envInt("LOAD_ML_NODES", 1), RefusalTimeout: int64(envInt("LOAD_REFUSAL_TIMEOUT_S", 0)), ExecutionTimeout: int64(envInt("LOAD_EXEC_TIMEOUT_S", 0))})
+	// Control profile: LOAD_ML_TTFT / LOAD_ML_TOKEN_INTERVAL give the mock ML a realistic
+	// serving latency (dev loadtest "realistic" profile = 250ms / 20ms) instead of zero-latency,
+	// so the knee is measured with and without the GPU-shaped floor. Written as explicit
+	// mock_openai.nodes (config.MockOpenAINodeCfg) into the generated config before gencompose.
+	if ttft, ti := os.Getenv("LOAD_ML_TTFT"), os.Getenv("LOAD_ML_TOKEN_INTERVAL"); ttft != "" || ti != "" {
+		p := filepath.Join(stack.WorkDir, "config.yaml")
+		raw, rerr := os.ReadFile(p)
+		require.NoError(t, rerr)
+		var nodes strings.Builder
+		nodes.WriteString("  nodes:\n")
+		for i := 0; i < envInt("LOAD_ML_NODES", 1); i++ {
+			nodes.WriteString(fmt.Sprintf("    - name: mock-openai-%d\n", i))
+			if ttft != "" {
+				nodes.WriteString(fmt.Sprintf("      ttft: %s\n", ttft))
+			}
+			if ti != "" {
+				nodes.WriteString(fmt.Sprintf("      token_interval: %s\n", ti))
+			}
+		}
+		patched := strings.Replace(string(raw), "mock_openai:\n", "mock_openai:\n"+nodes.String(), 1)
+		require.NotEqual(t, string(raw), patched, "mock_openai block not found in generated config")
+		require.NoError(t, os.WriteFile(p, []byte(patched), 0o644))
+		t.Logf("mock ML control profile: ttft=%q token_interval=%q nodes=%d", ttft, ti, envInt("LOAD_ML_NODES", 1))
+	}
 	stack.RunGencompose(t)
 	cfg := stack.LoadConfig(t)
-	require.Len(t, cfg.Hosts, 2, "load stack must be the 2×versiond HA pair")
+	require.Len(t, cfg.Hosts, nHosts, "load stack host count")
 	stack.Up(t)
 	eps := stack.Endpoints(t, cfg)
 	client := harness.HTTPClient()
