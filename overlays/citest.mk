@@ -1,3 +1,4 @@
+SHELL := /bin/bash
 
 # ---- QA overlay (qa/v6-coverage): Phase 0.5 load modes / Phase 1 fault×load driver ----
 # Parameters via LOAD_* env (see citest/load_fault_test.go). Writes results-load/<ts>/.
@@ -22,3 +23,19 @@ citest-proxy-routing: ## QA: proxy-router/test-routing.sh + route-status_test.sh
 .PHONY: citest-tls-alpn
 citest-tls-alpn: ## QA: proxy-router :9443 TLS+ALPN h2 (NGINX_MODE=https) and h2c (NGINX_MODE=http) probe.
 	bash $(CURDIR)/scripts/qa-tls-alpn.sh
+
+# QA: Phase B — full unit/integration `go test` of the devshard module with docker present
+# (testcontainers Postgres suites), plus a coverprofile for the Phase A5 diff-line coverage.
+# Writes citest/results-load/unit/{unit.log,cover.out,cover-func.txt}.
+.PHONY: citest-unit
+citest-unit: ## QA: go test ./... (devshard module) + coverprofile; needs docker for the PG suites.
+	mkdir -p $(CURDIR)/citest/results-load/unit
+	cd ../.. && (go test ./... -count=1 -timeout 60m -coverprofile=$(CURDIR)/citest/results-load/unit/cover.out -covermode=atomic 2>&1 | tee $(CURDIR)/citest/results-load/unit/unit.log; exit $${PIPESTATUS[0]}) ; rc=$$?; \
+	  go tool cover -func=$(CURDIR)/citest/results-load/unit/cover.out > $(CURDIR)/citest/results-load/unit/cover-func.txt 2>/dev/null || true; \
+	  echo "citest-unit: ok=$$(grep -c '^ok' $(CURDIR)/citest/results-load/unit/unit.log) FAIL=$$(grep -c '^FAIL' $(CURDIR)/citest/results-load/unit/unit.log) rc=$$rc"; exit $$rc
+
+# QA: Phase B for the other Go modules touched by the PR (proxy-router has shell tests only).
+.PHONY: citest-unit-dapi
+citest-unit-dapi: ## QA: go test of decentralized-api devshard-related packages.
+	mkdir -p $(CURDIR)/citest/results-load/unit-dapi
+	cd ../../decentralized-api && go test ./... -count=1 -timeout 40m 2>&1 | tee $(CURDIR)/citest/results-load/unit-dapi/unit.log; exit $${PIPESTATUS[0]}

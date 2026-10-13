@@ -40,6 +40,10 @@ jobs:
           docker version --format 'docker={{.Server.Version}}' | tee -a /tmp/citest.log
           docker buildx version | tee -a /tmp/citest.log
           docker compose version | tee -a /tmp/citest.log
+      - name: fetch v5 baseline ref (build-baseline-infra)
+        run: |
+          git fetch --no-tags --depth=1 origin devshard-0.2.15-v5:refs/remotes/origin/devshard-0.2.15-v5 2>&1 | tee -a /tmp/citest.log || echo "baseline fetch failed (non-fatal here)" | tee -a /tmp/citest.log
+          git rev-parse --verify origin/devshard-0.2.15-v5 2>&1 | tee -a /tmp/citest.log || true
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.9'
