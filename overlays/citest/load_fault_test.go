@@ -106,6 +106,14 @@ func classify(err error) (string, string) {
 		return "ok", ""
 	}
 	if harness.GatewayCapacityGone(err) {
+		// Budget exhaustion ("no escrow can fund this request … insufficient escrow balance")
+		// is the gateway refusing for lack of escrow funds, not a capacity/transport fault.
+		// Wave 1 (runs 38450196300…38450281671) was 98 % this status from t≈20 s because the
+		// seed escrow is 1_000_000 and a 16-token chat reserves ≈10.8 k; keep it apart from
+		// real 503s so the knee and the fault window are never masked by the test budget.
+		if strings.Contains(err.Error(), "insufficient escrow balance") {
+			return "503-budget", err.Error()
+		}
 		return "503", err.Error()
 	}
 	if m := statusRe.FindString(err.Error()); m != "" {
@@ -274,7 +282,20 @@ func TestLoadFault(t *testing.T) {
 	outDir := envOrDef("LOAD_OUT_DIR", filepath.Join("results-load", time.Now().UTC().Format("20060102T150405Z")))
 	require.NoError(t, os.MkdirAll(outDir, 0o755))
 
-	stack, cfg, eps := harness.BootStack(t, "citest-load-*")
+	// Boot like harness.BootStack but with a seed escrow sized for the run: LOAD_ESCROW
+	// (default 1e11 ≈ 9 M short chats) so the budget is never the limiter under load.
+	escrowAmt := uint64(envInt("LOAD_ESCROW", 0))
+	if escrowAmt == 0 {
+		escrowAmt = 100_000_000_000
+	}
+	stack := harness.NewStack(t, "citest-load-*")
+	harness.RequireLinuxDevshardd(t, stack.TestenvDir)
+	harness.WriteMultiConfig(t, stack.WorkDir, harness.MultiConfigOpts{Hosts: 2, EscrowSlots: 2, EscrowAmount: escrowAmt})
+	stack.RunGencompose(t)
+	cfg := stack.LoadConfig(t)
+	require.Len(t, cfg.Hosts, 2, "load stack must be the 2×versiond HA pair")
+	stack.Up(t)
+	eps := stack.Endpoints(t, cfg)
 	client := harness.HTTPClient()
 	chatClient := harness.GatewayChatClient()
 	adminKey := harness.TestenvAdminAPIKey
@@ -295,6 +316,8 @@ func TestLoadFault(t *testing.T) {
 	})
 	snap := harness.GetGatewaySessionSnapshot(t, client, eps.GatewayHTTP, adminKey)
 	require.NotEmpty(t, snap.EscrowID)
+	ledgerStart := harness.GetGatewayLedgerSnapshot(t, client, eps.GatewayHTTP, adminKey)
+	t.Logf("ledger at start: balance=%d latest_nonce=%d (seed escrow amount %d)", ledgerStart.Balance, ledgerStart.LatestNonce, escrowAmt)
 	_, upA, _, upB := harness.FindDistinctStickySessions(t, client, eps.RouterHTTP, version)
 	primaryUp := harness.RequireResponseHeader(t, client, harness.RouterSessionURL(eps.RouterHTTP, version, snap.EscrowID, "/mempool"), harness.StickyUpstreamHeader)
 	primaryHost := harness.HostIDForUpstream(cfg, primaryUp)
@@ -496,8 +519,14 @@ func TestLoadFault(t *testing.T) {
 	pfe := payloadFetchErrCount("citest-load")
 	escFound, escSettled, escErr := escrowFate(t, eps, snap.EscrowID)
 	metrics := scrapeMetrics(t, client, stack, eps, hosts)
+	ledgerEnd := harness.GetGatewayLedgerSnapshot(t, client, eps.GatewayHTTP, adminKey)
+	var costPerOK uint64
+	if byStatus["ok"] > 0 && ledgerStart.Balance > ledgerEnd.Balance {
+		costPerOK = (ledgerStart.Balance - ledgerEnd.Balance) / uint64(byStatus["ok"])
+	}
 
 	summary := map[string]any{
+		"escrow_amount": escrowAmt, "ledger_start": ledgerStart, "ledger_end": ledgerEnd, "cost_per_ok": costPerOK,
 		"name": name, "mode": modeLabel(rps, sweep, fault), "rps": rps, "sweep": sweep, "shape": shape,
 		"fault": fault, "target": target, "pause_at_s": pauseAtS, "pause_len_s": pauseLenS,
 		"fault_at_s": int(faultAt.Seconds()), "fault_off_s": int(faultOff.Seconds()),
@@ -511,9 +540,9 @@ func TestLoadFault(t *testing.T) {
 	}
 	sb, _ := json.MarshalIndent(summary, "", " ")
 	require.NoError(t, os.WriteFile(filepath.Join(outDir, "summary.json"), sb, 0o644))
-	md := fmt.Sprintf("| %s | %s | %s/%s | %d | ok=%d 503=%d 429=%d 502=%d err=%d | p50=%dms p95=%dms p99=%dms | orphaned=%d/%d | ttr=%s | pfe=%s |\n",
-		name, modeLabel(rps, sweep, fault), fault, target, len(rs), byStatus["ok"], byStatus["503"], byStatus["429"], byStatus["502"], byStatus["err"],
-		percentile(lat, 0.5), percentile(lat, 0.95), percentile(lat, 0.99), orph, recs, ttr, pfe)
+	md := fmt.Sprintf("| %s | %s | %s/%s | %d | ok=%d 503=%d 503-budget=%d 429=%d 502=%d err=%d | p50=%dms p95=%dms p99=%dms | orphaned=%d/%d | ttr=%s | pfe=%s | balance %d→%d cost/ok≈%d |\n",
+		name, modeLabel(rps, sweep, fault), fault, target, len(rs), byStatus["ok"], byStatus["503"], byStatus["503-budget"], byStatus["429"], byStatus["502"], byStatus["err"],
+		percentile(lat, 0.5), percentile(lat, 0.95), percentile(lat, 0.99), orph, recs, ttr, pfe, ledgerStart.Balance, ledgerEnd.Balance, costPerOK)
 	require.NoError(t, os.WriteFile(filepath.Join(outDir, "summary.md"), []byte(md), 0o644))
 	t.Logf("LOAD-SUMMARY %s", md)
 	t.Logf("LOAD-BUCKETS %s", mustJSON(buckets))
@@ -602,11 +631,23 @@ func capturePprof(t *testing.T, stack *harness.Stack, hosts []string, outDir, ta
 		"block":     "block",
 		"goroutine": "goroutine?debug=1",
 	}
+	ports := envOrDef("LOAD_PPROF_PORTS", "5000 5001 5002 6060 8080")
+	// fetch: wget or curl, whichever the image has; `|| true` keeps the loop going per port.
+	fetch := func(q string) string {
+		return "for p in " + ports + "; do u=\"http://127.0.0.1:$p/debug/pprof/" + q + "\"; " +
+			"if command -v wget >/dev/null; then o=$(wget -qO- \"$u\" 2>/dev/null); else o=$(curl -sf --max-time 30 \"$u\" 2>/dev/null); fi; " +
+			"[ -n \"$o\" ] && { printf '%s' \"$o\" | base64 | tr -d '\\n'; exit 0; }; done; exit 1"
+	}
 	for _, h := range hosts {
 		h = strings.TrimSpace(h)
+		if !pprofDiagDone[h] {
+			pprofDiagDone[h] = true
+			diag, _ := stack.ComposeExecOutputTimeout(20*time.Second, h, "sh", "-c",
+				"echo tools: $(command -v wget) $(command -v curl); echo listeners:; (netstat -tln 2>/dev/null || ss -tln 2>/dev/null || cat /proc/net/tcp) | head -20; for p in "+ports+"; do printf '%s: ' $p; (wget -qO- http://127.0.0.1:$p/debug/pprof/ 2>/dev/null || curl -s --max-time 3 http://127.0.0.1:$p/debug/pprof/ 2>/dev/null) | head -c 80; echo; done")
+			t.Logf("pprof diag %s: %s", h, strings.TrimSpace(diag))
+		}
 		for name, q := range profiles {
-			out, err := stack.ComposeExecOutputTimeout(40*time.Second, h, "sh", "-c",
-				"for p in 5000 5001 5002; do wget -qO- \"http://127.0.0.1:$p/debug/pprof/"+q+"\" 2>/dev/null | base64 | tr -d '\\n' && break; done")
+			out, err := stack.ComposeExecOutputTimeout(60*time.Second, h, "sh", "-c", fetch(q))
 			if err != nil || strings.TrimSpace(out) == "" {
 				t.Logf("pprof %s/%s %s: unavailable (%v)", h, name, tag, err)
 				continue
@@ -629,6 +670,8 @@ func capturePprof(t *testing.T, stack *harness.Stack, hosts []string, outDir, ta
 }
 
 func decodeB64(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }
+
+var pprofDiagDone = map[string]bool{}
 
 // escrowFate queries the mock chain for the warm escrow's on-chain state (Phase 1b in testenv).
 // The mock store models only {not-found, unsettled, settled} — no refund/expiry — so the
