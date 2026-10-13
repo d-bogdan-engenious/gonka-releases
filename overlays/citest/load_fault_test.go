@@ -765,7 +765,7 @@ func dumpServiceLog(t *testing.T, service, outDir string) map[string]int {
 	_ = os.WriteFile(filepath.Join(outDir, service+".log"), []byte(out), 0o644)
 	// `gateway: all N affordable escrow(s) at zero capacity … per-escrow weights: …` is the
 	// picker's own diagnostic for a "no live host capacity" 503 (gateway.go ~2318).
-	re := regexp.MustCompile(`(?i)(skipped: [a-z_]+=\d+|high_nonce|zero live weight|zero_live_weight|at zero capacity|no live host capacity|quarantin\w+|throttl\w+|strike\w*|depleted|budget exhausted|runtimeAtNonceLimit|no devshard runtimes|escrow rotation|capacity_state|live_weight=\d+|poc[_ -]excl\w+)`)
+	re := regexp.MustCompile(`(?i)(validation voting false|validate failed|payload request auth failed|timestamp_too_old|participant_limit_[a-z_]+|skipped: [a-z_]+=\d+|high_nonce|zero live weight|zero_live_weight|at zero capacity|no live host capacity|quarantin\w+|throttl\w+|strike\w*|depleted|budget exhausted|runtimeAtNonceLimit|no devshard runtimes|escrow rotation|capacity_state|live_weight=\d+|poc[_ -]excl\w+)`)
 	hist := map[string]int{}
 	for _, line := range strings.Split(out, "\n") {
 		for _, m := range re.FindAllString(line, -1) {
