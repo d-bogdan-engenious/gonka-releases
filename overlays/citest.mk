@@ -39,3 +39,10 @@ citest-unit: ## QA: go test ./... (devshard module) + coverprofile; needs docker
 citest-unit-dapi: ## QA: go test of decentralized-api devshard-related packages.
 	mkdir -p $(CURDIR)/citest/results-load/unit-dapi
 	cd ../../decentralized-api && go test ./... -count=1 -timeout 40m 2>&1 | tee $(CURDIR)/citest/results-load/unit-dapi/unit.log; exit $${PIPESTATUS[0]}
+
+# QA: T-DEV-1 — the dev target citest-grpc-transport selects TestG1_/G2_/G3_/G4_ which do not exist
+# at 7a977c0d (vacuous PASS). Run the gRPC gateway tests that DO exist.
+.PHONY: citest-grpc-real
+citest-grpc-real: citest-images ## QA: TestGatewayEscrowReadGRPC | TestGatewayChatGRPCOnly | TestGatewayEscrowCreateGRPC.
+	$(MAKE) build-devshardd
+	$(CITEST_RPC_RUN) -run 'TestGatewayEscrowReadGRPC|TestGatewayChatGRPCOnly|TestGatewayEscrowCreateGRPC' -count=1 -v -timeout 40m
