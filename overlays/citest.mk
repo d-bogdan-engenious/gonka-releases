@@ -30,7 +30,7 @@ citest-tls-alpn: ## QA: proxy-router :9443 TLS+ALPN h2 (NGINX_MODE=https) and h2
 .PHONY: citest-unit
 citest-unit: ## QA: go test ./... (devshard module) + coverprofile; needs docker for the PG suites.
 	mkdir -p $(CURDIR)/citest/results-load/unit
-	cd ../.. && (go test ./... -count=1 -timeout 60m -coverprofile=$(CURDIR)/citest/results-load/unit/cover.out -covermode=atomic 2>&1 | tee $(CURDIR)/citest/results-load/unit/unit.log; exit $${PIPESTATUS[0]}) ; rc=$$?; \
+	cd .. && (go test ./... -count=1 -timeout 60m -coverprofile=$(CURDIR)/citest/results-load/unit/cover.out -covermode=atomic 2>&1 | tee $(CURDIR)/citest/results-load/unit/unit.log; exit $${PIPESTATUS[0]}) ; rc=$$?; \
 	  go tool cover -func=$(CURDIR)/citest/results-load/unit/cover.out > $(CURDIR)/citest/results-load/unit/cover-func.txt 2>/dev/null || true; \
 	  echo "citest-unit: ok=$$(grep -c '^ok' $(CURDIR)/citest/results-load/unit/unit.log) FAIL=$$(grep -c '^FAIL' $(CURDIR)/citest/results-load/unit/unit.log) rc=$$rc"; exit $$rc
 
