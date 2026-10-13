@@ -188,6 +188,9 @@ func orphanedCount(client *http.Client, gatewayURL, key string) (int, int, error
 	if err := adminGET(client, gatewayURL+"/v1/debug/inferences", key, &raw); err != nil {
 		return -1, -1, err
 	}
+	// DRV-1: the body is {"total_inferences":N,"inferences":{"<escrow/nonce>":{"status":…}}} — a MAP
+	// keyed by inference id (harness.gatewayDebugInferencesBody), not an array. The v4–v7 parser
+	// looked for arrays and silently counted 0 records in every run.
 	var recs []map[string]any
 	switch v := raw.(type) {
 	case []any:
@@ -198,8 +201,15 @@ func orphanedCount(client *http.Client, gatewayURL, key string) (int, int, error
 		}
 	case map[string]any:
 		for _, k := range []string{"inferences", "live", "items", "records"} {
-			if arr, ok := v[k].([]any); ok {
-				for _, r := range arr {
+			switch coll := v[k].(type) {
+			case []any:
+				for _, r := range coll {
+					if m, ok := r.(map[string]any); ok {
+						recs = append(recs, m)
+					}
+				}
+			case map[string]any:
+				for _, r := range coll {
 					if m, ok := r.(map[string]any); ok {
 						recs = append(recs, m)
 					}
@@ -207,7 +217,8 @@ func orphanedCount(client *http.Client, gatewayURL, key string) (int, int, error
 			}
 		}
 	}
-	terminal := map[string]bool{"sealed": true, "finished": true, "settled": true, "finish_published": true, "done": true, "refused": true, "failed": true}
+	// Terminal per the gateway state machine; the dev runner counts pending+started+challenged as orphaned.
+	terminal := map[string]bool{"sealed": true, "finished": true, "settled": true, "finish_published": true, "done": true, "refused": true, "failed": true, "timed_out": true, "invalid": true, "missed": true}
 	orph := 0
 	for _, m := range recs {
 		st := ""
@@ -473,7 +484,7 @@ func TestLoadFault(t *testing.T) {
 						stack.StopService(t, target)
 					case "netdown":
 						netdownIP = netdownApply(t, target)
-					case "drop9443", "reject9443":
+					case "drop9443", "reject9443", "drop8080", "reject8080":
 						iptables9443(t, target, fault, os.Getenv("LOAD_ASYM_FROM"), true)
 					}
 					applied = true
@@ -488,7 +499,7 @@ func TestLoadFault(t *testing.T) {
 						stack.StartService(t, target)
 					case "netdown":
 						netdownRevert(t, target, netdownIP)
-					case "drop9443", "reject9443":
+					case "drop9443", "reject9443", "drop8080", "reject8080":
 						iptables9443(t, target, fault, os.Getenv("LOAD_ASYM_FROM"), false)
 					}
 					reverted = true
@@ -648,9 +659,16 @@ func netdownRevert(t *testing.T, service, ip string) {
 func iptables9443(t *testing.T, target, mode, asymFrom string, apply bool) {
 	t.Helper()
 	ctr, net := netdownContainer(t, target)
+	// mode = drop|reject + port. DRV-2: in testenv the peer-RPC path is versiond-router:8081 → host,
+	// so a rule on the host's :9443 intercepts nothing (wave 3/4 drop9443/reject9443 = no-op). Use
+	// :8080 (the host's HTTP port the router dials for chat AND peer-RPC) to partition a host.
 	act := "DROP"
-	if mode == "reject9443" {
+	if strings.HasPrefix(mode, "reject") {
 		act = "REJECT"
+	}
+	port := strings.TrimLeft(mode, "dropreject")
+	if port == "" {
+		port = "9443"
 	}
 	src := ""
 	if asymFrom != "" {
@@ -663,7 +681,7 @@ func iptables9443(t *testing.T, target, mode, asymFrom string, apply bool) {
 	if !apply {
 		op = "-D"
 	}
-	rule := fmt.Sprintf("iptables %s INPUT -p tcp --dport 9443%s -j %s", op, src, act)
+	rule := fmt.Sprintf("iptables %s INPUT -p tcp --dport %s%s -j %s", op, port, src, act)
 	out, err := shellOut("docker", "run", "--rm", "--net=container:"+ctr, "--cap-add", "NET_ADMIN", "alpine:3.19",
 		"sh", "-c", "apk add --no-cache iptables >/dev/null 2>&1; "+rule+" && iptables -S INPUT")
 	require.NoError(t, err, out)
