@@ -56,6 +56,11 @@ jobs:
           if ls _ci/overlays/citest/*.go >/dev/null 2>&1; then
             cp -v _ci/overlays/citest/*.go devshard/testenv/citest/ | tee -a /tmp/citest.log
           fi
+          if ls _ci/overlays/scripts/* >/dev/null 2>&1; then
+            mkdir -p devshard/testenv/scripts
+            cp -v _ci/overlays/scripts/* devshard/testenv/scripts/ | tee -a /tmp/citest.log
+            chmod +x devshard/testenv/scripts/*.sh
+          fi
           if [ -f _ci/overlays/citest.mk ]; then
             cat _ci/overlays/citest.mk >> devshard/testenv/Makefile
             echo "appended overlays/citest.mk to testenv/Makefile" | tee -a /tmp/citest.log
