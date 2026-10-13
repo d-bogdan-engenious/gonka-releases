@@ -84,6 +84,8 @@ jobs:
           echo "=== make result: ${{ steps.run.outcome }} ===" | tee -a /tmp/citest.log
           mkdir -p /tmp/results-load
           cp -r devshard/testenv/results-load/. /tmp/results-load/ 2>/dev/null || true
+          cp -r devshard/testenv/citest/results-load/. /tmp/results-load/ 2>/dev/null || true
+          ls -R /tmp/results-load | head -40 | tee -a /tmp/citest.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
