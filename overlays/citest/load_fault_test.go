@@ -12,7 +12,16 @@ package citest
 //	LOAD_DURATION_S     total run seconds (default 300)
 //	LOAD_PAUSE_AT_S     fault start offset (default 91 = colleague's 1:31)
 //	LOAD_PAUSE_LEN_S    fault length (default 60)
-//	LOAD_FAULT          none | pause | stop   (pause=docker pause≈SIGSTOP, stop=stop+start≈kill+restart)
+//	LOAD_FAULT          none | pause | stop | netdown | drop9443 | reject9443
+//	LOAD_ASYM_FROM      with drop9443/reject9443: only block traffic FROM this service to the
+//	                    target's :9443 (asymmetric partition); empty = block all inbound :9443
+//	LOAD_PPROF          1 → capture cpu(15s)/mutex/block/goroutine pprof from each sampled host
+//	                    at the end of every load step (knee) and right after fault revert
+//	                    pause=docker pause≈SIGSTOP · stop=stop+start≈kill+restart ·
+//	                    netdown=docker network disconnect/connect (full L3 partition of the
+//	                    target, IP preserved on reconnect). :9443-only DROP/REJECT and the
+//	                    asymmetric partition need NET_ADMIN+iptables in the versiond image —
+//	                    not available in the generated compose (see results/19-repro.md).
 //	LOAD_TARGET         service name | primary | survivor  (sticky primary/survivor of the warm escrow)
 //	LOAD_SHAPE          short | long | stream
 //	LOAD_RPS_SWEEP      e.g. "1,4,8,16,32,64" → knee sweep (no fault), LOAD_STEP_S per step (default 60)
@@ -26,6 +35,8 @@ package citest
 // Keep the failure, keep the data.
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,8 +52,10 @@ import (
 	"testing"
 	"time"
 
+	"common/chain"
 	"devshard/testenv/citest/harness"
 	"devshard/testenv/config"
+	inferencetypes "github.com/productscience/inference/x/inference/types"
 
 	"github.com/stretchr/testify/require"
 )
@@ -206,7 +219,7 @@ func orphanedCount(client *http.Client, gatewayURL, key string) (int, int, error
 func sampleHost(stack *harness.Stack, svc string, t0 time.Time) hostSample {
 	s := hostSample{TMs: time.Since(t0).Milliseconds(), Service: svc, Goroutines: -1}
 	out, err := stack.ComposeExecOutputTimeout(8*time.Second, svc, "sh", "-c",
-		"grep -E 'VmRSS|Threads' /proc/1/status; (wget -qO- http://127.0.0.1:8080/debug/pprof/goroutine?debug=1 2>/dev/null | head -1) || true")
+		"grep -E 'VmRSS|Threads' /proc/1/status; for p in 5000 5001 5002; do wget -qO- http://127.0.0.1:$p/debug/pprof/goroutine?debug=1 2>/dev/null | head -1 && break; done; true")
 	if err != nil {
 		s.Raw = "exec-err: " + err.Error()
 		return s
@@ -376,6 +389,7 @@ func TestLoadFault(t *testing.T) {
 
 	faultAt, faultOff := -1*time.Second, -1*time.Second
 	applied, reverted := false, false
+	netdownIP := ""
 	seq := 0
 	for _, step := range runSteps {
 		curRPS, secs := step[0], step[1]
@@ -393,6 +407,10 @@ func TestLoadFault(t *testing.T) {
 						stack.PauseService(t, target)
 					case "stop":
 						stack.StopService(t, target)
+					case "netdown":
+						netdownIP = netdownApply(t, target)
+					case "drop9443", "reject9443":
+						iptables9443(t, target, fault, os.Getenv("LOAD_ASYM_FROM"), true)
 					}
 					applied = true
 				}
@@ -404,14 +422,24 @@ func TestLoadFault(t *testing.T) {
 						stack.UnpauseService(t, target)
 					case "stop":
 						stack.StartService(t, target)
+					case "netdown":
+						netdownRevert(t, target, netdownIP)
+					case "drop9443", "reject9443":
+						iptables9443(t, target, fault, os.Getenv("LOAD_ASYM_FROM"), false)
 					}
 					reverted = true
+					if os.Getenv("LOAD_PPROF") == "1" {
+						capturePprof(t, stack, hosts, outDir, "after-revert")
+					}
 				}
 			}
 			seq++
 			fire(seq, float64(curRPS))
 		}
 		tick.Stop()
+		if os.Getenv("LOAD_PPROF") == "1" {
+			capturePprof(t, stack, hosts, outDir, fmt.Sprintf("step-%drps", curRPS))
+		}
 	}
 	wg.Wait()
 	const drain = 60 * time.Second
@@ -466,6 +494,7 @@ func TestLoadFault(t *testing.T) {
 	}
 	orph, recs, oerr := orphanedCount(client, eps.GatewayHTTP, adminKey)
 	pfe := payloadFetchErrCount("citest-load")
+	escFound, escSettled, escErr := escrowFate(t, eps, snap.EscrowID)
 
 	summary := map[string]any{
 		"name": name, "mode": modeLabel(rps, sweep, fault), "rps": rps, "sweep": sweep, "shape": shape,
@@ -475,7 +504,8 @@ func TestLoadFault(t *testing.T) {
 		"p50_ms": percentile(lat, 0.50), "p95_ms": percentile(lat, 0.95), "p99_ms": percentile(lat, 0.99),
 		"orphaned": orph, "gateway_records": recs, "orphan_query_err": fmt.Sprint(oerr),
 		"time_to_recovery": ttr, "payload_fetch_err": pfe, "buckets_10s": buckets,
-		"escrow": snap.EscrowID, "primary": primaryHost, "survivor": survivorHost, "sha": gitSHA(),
+		"escrow": snap.EscrowID, "escrow_found": escFound, "escrow_settled": escSettled, "escrow_query_err": escErr,
+		"primary": primaryHost, "survivor": survivorHost, "sha": gitSHA(),
 	}
 	sb, _ := json.MarshalIndent(summary, "", " ")
 	require.NoError(t, os.WriteFile(filepath.Join(outDir, "summary.json"), sb, 0o644))
@@ -485,4 +515,134 @@ func TestLoadFault(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outDir, "summary.md"), []byte(md), 0o644))
 	t.Logf("LOAD-SUMMARY %s", md)
 	t.Logf("LOAD-BUCKETS %s", mustJSON(buckets))
+}
+
+// netdownContainer resolves the compose container for a service of this test's stack.
+func netdownContainer(t *testing.T, service string) (ctr, network string) {
+	t.Helper()
+	out, err := shellOut("docker", "ps", "--format", "{{.Names}}")
+	require.NoError(t, err)
+	for _, n := range strings.Fields(out) {
+		if strings.HasPrefix(n, "citest-load-") && strings.HasSuffix(n, "-"+service+"-1") {
+			project := strings.TrimSuffix(n, "-"+service+"-1")
+			return n, project + "_testenv"
+		}
+	}
+	t.Fatalf("netdown: container for service %q not found", service)
+	return "", ""
+}
+
+// netdownApply partitions the target at L3 (docker network disconnect) and
+// returns its static IP so revert can restore the same address (otherwise the
+// run would also be scenario 1.9 "peer IP changed").
+func netdownApply(t *testing.T, service string) string {
+	t.Helper()
+	ctr, net := netdownContainer(t, service)
+	ip, err := shellOut("docker", "inspect", "-f", `{{(index .NetworkSettings.Networks "`+net+`").IPAddress}}`, ctr)
+	require.NoError(t, err)
+	ip = strings.TrimSpace(ip)
+	out, err := shellOut("docker", "network", "disconnect", net, ctr)
+	require.NoError(t, err, out)
+	t.Logf("netdown: disconnected %s from %s (ip %s)", ctr, net, ip)
+	return ip
+}
+
+func netdownRevert(t *testing.T, service, ip string) {
+	t.Helper()
+	ctr, net := netdownContainer(t, service)
+	args := []string{"network", "connect"}
+	if ip != "" {
+		args = append(args, "--ip", ip)
+	}
+	args = append(args, net, ctr)
+	out, err := shellOut("docker", args...)
+	require.NoError(t, err, out)
+	t.Logf("netdown: reconnected %s to %s (ip %s)", ctr, net, ip)
+}
+
+// iptables9443 blocks (apply=true) or unblocks the target's :9443 using a
+// privileged sidecar that shares the target's network namespace — no image
+// or compose change needed. mode drop9443 → -j DROP, reject9443 → -j REJECT.
+// asymFrom != "" restricts to packets from that service's IP (B→A closed,
+// A→B open = the asymmetric partition).
+func iptables9443(t *testing.T, target, mode, asymFrom string, apply bool) {
+	t.Helper()
+	ctr, net := netdownContainer(t, target)
+	act := "DROP"
+	if mode == "reject9443" {
+		act = "REJECT"
+	}
+	src := ""
+	if asymFrom != "" {
+		fromCtr, _ := netdownContainer(t, asymFrom)
+		ip, err := shellOut("docker", "inspect", "-f", `{{(index .NetworkSettings.Networks "`+net+`").IPAddress}}`, fromCtr)
+		require.NoError(t, err)
+		src = " -s " + strings.TrimSpace(ip)
+	}
+	op := "-A"
+	if !apply {
+		op = "-D"
+	}
+	rule := fmt.Sprintf("iptables %s INPUT -p tcp --dport 9443%s -j %s", op, src, act)
+	out, err := shellOut("docker", "run", "--rm", "--net=container:"+ctr, "--cap-add", "NET_ADMIN", "alpine:3.19",
+		"sh", "-c", "apk add --no-cache iptables >/dev/null 2>&1; "+rule+" && iptables -S INPUT")
+	require.NoError(t, err, out)
+	t.Logf("iptables9443 apply=%v on %s: %s\n%s", apply, ctr, rule, out)
+}
+
+// capturePprof pulls cpu/mutex/block/goroutine profiles from the child
+// devshardd (versiond BasePort 5000) of each sampled host into outDir.
+func capturePprof(t *testing.T, stack *harness.Stack, hosts []string, outDir, tag string) {
+	t.Helper()
+	profiles := map[string]string{
+		"cpu":       "profile?seconds=15",
+		"mutex":     "mutex",
+		"block":     "block",
+		"goroutine": "goroutine?debug=1",
+	}
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		for name, q := range profiles {
+			out, err := stack.ComposeExecOutputTimeout(40*time.Second, h, "sh", "-c",
+				"for p in 5000 5001 5002; do wget -qO- \"http://127.0.0.1:$p/debug/pprof/"+q+"\" 2>/dev/null | base64 | tr -d '\\n' && break; done")
+			if err != nil || strings.TrimSpace(out) == "" {
+				t.Logf("pprof %s/%s %s: unavailable (%v)", h, name, tag, err)
+				continue
+			}
+			raw, derr := decodeB64(strings.TrimSpace(out))
+			if derr != nil {
+				t.Logf("pprof %s/%s %s: decode: %v", h, name, tag, derr)
+				continue
+			}
+			ext := ".pb.gz"
+			if name == "goroutine" {
+				ext = ".txt"
+			}
+			fn := filepath.Join(outDir, fmt.Sprintf("pprof-%s-%s-%s%s", h, name, tag, ext))
+			if werr := os.WriteFile(fn, raw, 0o644); werr == nil {
+				t.Logf("pprof saved %s (%d bytes)", fn, len(raw))
+			}
+		}
+	}
+}
+
+func decodeB64(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }
+
+// escrowFate queries the mock chain for the warm escrow's on-chain state (Phase 1b in testenv).
+// The mock store models only {not-found, unsettled, settled} — no refund/expiry — so the
+// "refunded on timeout" branch can only be answered on a real chain. Non-fatal.
+func escrowFate(t *testing.T, eps harness.Endpoints, escrowID string) (found, settled bool, errStr string) {
+	t.Helper()
+	id, err := strconv.ParseUint(escrowID, 10, 64)
+	if err != nil {
+		return false, false, "parse: " + err.Error()
+	}
+	conn := harness.DialMockChainGRPC(t, eps)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, qerr := chain.NewFromConn(conn).InferenceQueryClient().DevshardEscrow(ctx, &inferencetypes.QueryGetDevshardEscrowRequest{Id: id})
+	if qerr != nil {
+		return false, false, qerr.Error()
+	}
+	return resp.GetFound(), resp.GetEscrow().GetSettled(), ""
 }
